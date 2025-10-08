@@ -1,6 +1,6 @@
 #pragma once
 #include <Arduino.h>
-
+#define  DF_MAX_MP3  30 //max sounds
 inline bool isSeatbeltCCID(uint16_t id){
   switch(id){
     case 46: case 91: case 389: case 390: return true;

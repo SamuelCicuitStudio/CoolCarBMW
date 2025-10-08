@@ -84,7 +84,7 @@ void Player::dfDrain(uint16_t ms){
 
 bool Player::playTrack(uint16_t track){
   if(track < 1) track = 1;
-  if(track > 30) track = 30;
+  if(track > DF_MAX_MP3) track = DF_MAX_MP3;
 
   digitalWrite(PIN_SPK_RELAY, LOW);
   _relayOn = false;
@@ -93,10 +93,10 @@ bool Player::playTrack(uint16_t track){
 
   _df.playMp3Folder(track);
   dfDrain(8);
-  if(!waitBusyLevel(LOW, 400)){
+  if(!waitBusyLevel(LOW, 100)){
     _df.stop(); dfDrain(20);
     _df.playMp3Folder(track); dfDrain(8);
-    if(!waitBusyLevel(LOW, 400)) return false;
+    if(!waitBusyLevel(LOW, 100)) return false;
   }
   delay(AMP_ON_AFTER_BUSY_MS);
   digitalWrite(PIN_SPK_RELAY, HIGH);
