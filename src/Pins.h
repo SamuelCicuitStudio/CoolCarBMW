@@ -18,3 +18,4 @@ static const uint8_t PIN_SPK_RELAY = 6; // HIGH = relay ON (speaker connected)
 static const uint32_t ID_CCID      = 0x338; // CC-ID frames
 static const uint32_t ID_KEYBTN    = 0x23A; // Key fob button frames
 static const uint32_t ID_DOORS2    = 0x2FC; // Door bits (driver bit0 of byte1)
+static const uint32_t ID_KL15      = 0x130; // Ignition/ACC flags in byte0

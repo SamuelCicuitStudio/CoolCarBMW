@@ -17,7 +17,6 @@ public:
   void begin();
   void setBenchMode(bool bench);
 
-  // Playback
   bool playTrack(uint16_t track); // 1..DF_MAX_MP3
   void stop();
   void loop();

@@ -13,22 +13,8 @@ void Player::begin(){
   digitalWrite(PIN_SPK_RELAY, LOW);
   _relayOn = false;
 
-  if(_bench){
-    digitalWrite(PIN_DF_EN, HIGH);
-    delay(DF_WAKE_MS);
-    _ss.begin(9600);
-    if(_df.begin(_ss)){
-      _df.setTimeOut(500);
-      _df.volume(_volume);
-      dfDrain(60);
-      _dfPowered = true;
-    } else {
-      _dfPowered = true; // powered but init failed; will retry in ensureReady
-    }
-  } else {
-    digitalWrite(PIN_DF_EN, LOW);
-    _dfPowered = false;
-  }
+  digitalWrite(PIN_DF_EN, LOW);
+  _dfPowered = false;
 }
 
 void Player::setBenchMode(bool bench){ _bench = bench; }

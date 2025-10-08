@@ -1,16 +1,8 @@
 /*
-  Welcome + CC-ID player (Arduino Nano + MCP2515 + DFPlayer)
+  Welcome + CC-ID player + KL15 gauge sweep (Arduino Nano + MCP2515 + DFPlayer)
   - Welcome: on exact unlock, arm 2 min; if driver door opens in window -> play track 1.
-  - CC-ID frames (0x338) with tail FE FE FE:
-      * status 0x02 ACTIVE: play mapped track ONCE (until CLEARED seen).
-      * status 0x01 CLEARED: re-arm same CC-ID to allow playing again later.
-  - Seatbelt (46,91,389,390): play track 2 while ACTIVE; stop immediately on CLEARED;
-    if 20.5-min file ends while still ACTIVE, it auto-restarts.
-  - Unmapped CC-IDs -> track 14.
-  - CAN reader uses 10-frame history + 300 ms window to drop duplicates.
-  - Serial CLI:
-      * Play: "p1".."p30"
-      * Volume: "v0..v30", "v+", "v-", "v?" (query)
+  - CC-ID (0x338) FE FE FE tail: ACTIVE plays once; CLEARED re-arms; seatbelt=track 2 while ACTIVE.
+  - KL15 (0x130 b0): when ignition goes ON, after a delay, perform one gauge sweep (speed + tacho).
 */
 
 #include <Arduino.h>
@@ -37,107 +29,68 @@ Player  player;
 
 bool     welcomeArmed=false;
 uint32_t welcomeDeadline=0;
-
 uint16_t lastCcid=0xFFFF;
 uint8_t  lastStatus=0xFF;
-
 bool seatbeltActive=false;
 
 static inline bool timeBefore(uint32_t deadline){ return (int32_t)(millis() - deadline) < 0; }
 
-// --- Simple Serial CLI: play + volume ---
-// Robust to CR, LF, and CRLF endings; no unterminated char literals.
+// --- Serial CLI: play + volume ---
 void parseCLI(){
   static String line;
-
-  while (Serial.available()) {
+  while(Serial.available()){
     char c = (char)Serial.read();
-
-    // Normalize line endings:
-    // If we get '\r' (CR), convert to '\n' and swallow the following '\n' if present (CRLF).
-    if (c == '\r') {
-      if (Serial.peek() == '\n') (void)Serial.read(); // eat LF after CR
-      c = '\n';
-    }
-
-    if (c == '\n') {
+    if(c=='\r'){ if(Serial.peek()=='\n') (void)Serial.read(); c='\n'; }
+    if(c=='\n'){
       line.trim();
-      if (line.length()) {
+      if(line.length()){
         char cmd = line[0];
-
-        if (cmd == 'p' || cmd == 'P') {
-          // Play: p1..p30
+        if(cmd=='p' || cmd=='P'){
           String digits;
-          for (uint16_t i = 1; i < line.length(); ++i) {
-            char ch = line[i];
-            if (ch >= '0' && ch <= '9') digits += ch;
-            else if (ch != ' ') { digits = ""; break; }
-          }
-          long n = digits.length() ? digits.toInt() : -1;
-          if (n >= 1 && n <= 30) {
-            if (player.isPlaying()) {
-              if (player.currentTrack() != 1 || n == 1) {
-                player.stop();
-                player.playTrack((uint16_t)n);
-              }
-            } else {
-              player.playTrack((uint16_t)n);
-            }
-            if (DEBUG_PRINTS) { Serial.print(F("[CLI] play ")); Serial.println(n); }
+          for(uint16_t i=1;i<line.length();++i){ char ch=line[i]; if(ch>='0'&&ch<='9') digits+=ch; else if(ch!=' ') { digits=""; break; } }
+          long n = digits.length()?digits.toInt():-1;
+          if(n>=1 && n<=DF_MAX_MP3){
+            if(player.isPlaying()){
+              if(player.currentTrack()!=1 || n==1){ player.stop(); player.playTrack((uint16_t)n); }
+            } else player.playTrack((uint16_t)n);
+            if(DEBUG_PRINTS){ Serial.print(F("[CLI] play ")); Serial.println(n); }
+          } else DBG(F("[CLI] Use p1..p30"));
+        } else if(cmd=='v' || cmd=='V'){
+          if(line.length()==2 && (line[1]=='?')){ Serial.print(F("[CLI] volume=")); Serial.println(player.volume()); }
+          else if(line.length()==2 && (line[1]=='+'||line[1]=='-')){
+            int cur=(int)player.volume(); if(line[1]=='+') cur++; else cur--; if(cur<0)cur=0; if(cur>Player::DF_VOLUME_MAX)cur=Player::DF_VOLUME_MAX;
+            player.setVolume((uint8_t)cur); Serial.print(F("[CLI] volume=")); Serial.println(player.volume());
           } else {
-            if (DEBUG_PRINTS) Serial.println(F("[CLI] Use p1..p30"));
+            String digits; for(uint16_t i=1;i<line.length();++i){ char ch=line[i]; if(ch>='0'&&ch<='9') digits+=ch; else if(ch!=' ') { digits=""; break; } }
+            long v = digits.length()?digits.toInt():-1;
+            if(v>=0 && v<=Player::DF_VOLUME_MAX){ player.setVolume((uint8_t)v); Serial.print(F("[CLI] volume set to ")); Serial.println(player.volume()); }
+            else DBG(F("[CLI] volume: v0..v30, v+, v-, v?"));
           }
-
-        } else if (cmd == 'v' || cmd == 'V') {
-          // Volume: v0..v30, v+, v-, v?
-          if (line.length() == 2 && (line[1] == '?')) {
-            Serial.print(F("[CLI] volume=")); Serial.println(player.volume());
-          } else if (line.length() == 2 && (line[1] == '+' || line[1] == '-')) {
-            int cur = (int)player.volume();
-            if (line[1] == '+') cur++; else cur--;
-            if (cur < 0) cur = 0;
-            if (cur > Player::DF_VOLUME_MAX) cur = Player::DF_VOLUME_MAX;
-            player.setVolume((uint8_t)cur);
-            Serial.print(F("[CLI] volume=")); Serial.println(player.volume());
-          } else {
-            String digits;
-            for (uint16_t i = 1; i < line.length(); ++i) {
-              char ch = line[i];
-              if (ch >= '0' && ch <= '9') digits += ch;
-              else if (ch != ' ') { digits = ""; break; }
-            }
-            long v = digits.length() ? digits.toInt() : -1;
-            if (v >= 0 && v <= Player::DF_VOLUME_MAX) {
-              player.setVolume((uint8_t)v);
-              Serial.print(F("[CLI] volume set to ")); Serial.println(player.volume());
-            } else {
-              if (DEBUG_PRINTS) Serial.println(F("[CLI] volume: v0..v30, v+, v-, v?"));
-            }
-          }
-
         } else {
-          if (DEBUG_PRINTS) Serial.println(F("[CLI] Commands: p1..p30, v0..v30, v+, v-, v?"));
+          DBG(F("[CLI] Commands: p1..p30, v0..v30, v+, v-, v?"));
         }
       }
-      line = ""; // reset buffer after processing a line
-    } else {
-      line += c;                          // accumulate
-      if (line.length() > 32) line.remove(0, line.length() - 32); // cap buffer
-    }
+      line="";
+    } else { line += c; if(line.length()>32) line.remove(0, line.length()-32); }
   }
 }
-
 
 void setup(){
   Serial.begin(115200);
   delay(80);
-  DBG(F("Welcome + CCID DFPlayer starting (dedup + CLI + volume)..."));
+  DBG(F("Starting: CCID + Welcome + KL15 Sweep + CLI/Volume"));
 
   if(!canbus.begin()){
     DBG(F("MCP2515 init FAIL."));
     while(1) delay(1000);
   }
   DBG(F("MCP2515 OK (8MHz, 100kbps)."));
+
+  // Sweep defaults; allow ACC to count as ignition if you prefer
+  canbus.enableSweep(true);
+  canbus.setSweepAcceptACC(false);  // set true to accept ACC-only
+  canbus.setSweepTargets(260, 5500);
+  canbus.setSweepTiming(28, 35, 1000, 4000);
 
   player.setBenchMode(false);
   player.begin();
@@ -146,7 +99,6 @@ void setup(){
 }
 
 void loop(){
-  // Manual serial first
   parseCLI();
 
   // CAN processing: distinct frames only
@@ -154,6 +106,8 @@ void loop(){
   uint8_t processed = 0;
   while(processed < 4 && canbus.readOnceDistinct(id, len, buf)){
     processed++;
+    // Feed every frame to CanBus so it can see KL15 (0x130) and manage sweep
+    canbus.onFrame(id, len, buf);
 
     if(id == ID_KEYBTN){
       if(isExactUnlock_23A(buf, len)){
@@ -229,6 +183,9 @@ void loop(){
     welcomeArmed = false;
     DBG(F("[WELCOME] window expired."));
   }
+
+  // Non-blocking sweep heartbeat
+  canbus.tickSweep();
 
   // DF housekeeping
   player.loop();
