@@ -17,11 +17,14 @@ void Player::begin(){
     digitalWrite(PIN_DF_EN, HIGH);
     delay(DF_WAKE_MS);
     _ss.begin(9600);
-    _df.begin(_ss);
-    _df.setTimeOut(500);
-    _df.volume(DF_VOLUME);
-    dfDrain(60);
-    _dfPowered = true;
+    if(_df.begin(_ss)){
+      _df.setTimeOut(500);
+      _df.volume(_volume);
+      dfDrain(60);
+      _dfPowered = true;
+    } else {
+      _dfPowered = true; // powered but init failed; will retry in ensureReady
+    }
   } else {
     digitalWrite(PIN_DF_EN, LOW);
     _dfPowered = false;
@@ -29,6 +32,15 @@ void Player::begin(){
 }
 
 void Player::setBenchMode(bool bench){ _bench = bench; }
+
+void Player::setVolume(uint8_t v){
+  if(v > DF_VOLUME_MAX) v = DF_VOLUME_MAX;
+  _volume = v;
+  if(_dfPowered){
+    _df.volume(_volume);
+    dfDrain(10);
+  }
+}
 
 bool Player::ensureReady(){
   digitalWrite(PIN_SPK_RELAY, LOW);
@@ -48,7 +60,7 @@ bool Player::ensureReady(){
     if(!_df.begin(_ss)) return false;
   }
   _df.setTimeOut(500);
-  _df.volume(DF_VOLUME);
+  _df.volume(_volume);
   dfDrain(50);
   return true;
 }

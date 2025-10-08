@@ -8,7 +8,9 @@
     if 20.5-min file ends while still ACTIVE, it auto-restarts.
   - Unmapped CC-IDs -> track 14.
   - CAN reader uses 10-frame history + 300 ms window to drop duplicates.
-  - Serial CLI: send "p1".."p30" (followed by Enter) to manually play a track.
+  - Serial CLI:
+      * Play: "p1".."p30"
+      * Volume: "v0..v30", "v+", "v-", "v?" (query)
 */
 
 #include <Arduino.h>
@@ -43,17 +45,19 @@ bool seatbeltActive=false;
 
 static inline bool timeBefore(uint32_t deadline){ return (int32_t)(millis() - deadline) < 0; }
 
-// --- Simple Serial CLI: "p1".."p30" ---
+// --- Simple Serial CLI: play + volume ---
 void parseCLI(){
   static String line;
   while(Serial.available()){
     char c = (char)Serial.read();
-    if(c=='\r') continue;
-    if(c=='\n'){
+    if(c=='') continue;
+    if(c=='
+'){
       line.trim();
       if(line.length()){
-        if(line[0]=='p' || line[0]=='P'){
-          // extract digits after 'p'
+        char cmd = line[0];
+        if(cmd=='p' || cmd=='P'){
+          // Play command p1..p30
           String digits;
           for(uint16_t i=1;i<line.length();++i){
             char ch=line[i];
@@ -62,12 +66,11 @@ void parseCLI(){
           }
           long n = digits.length()?digits.toInt():-1;
           if(n>=1 && n<=30){
-            // Don't preempt welcome if it's playing, unless it's p1
             if(player.isPlaying()){
               if(player.currentTrack()!=1 || n==1){
                 player.stop();
                 player.playTrack((uint16_t)n);
-              } // else ignore to keep welcome intact
+              }
             } else {
               player.playTrack((uint16_t)n);
             }
@@ -75,8 +78,34 @@ void parseCLI(){
           } else {
             DBG(F("[CLI] Use p1..p30"));
           }
+        } else if(cmd=='v' || cmd=='V'){
+          // Volume command
+          if(line.length()==2 && (line[1]=='?' )){
+            Serial.print(F("[CLI] volume=")); Serial.println(player.volume());
+          } else if(line.length()==2 && (line[1]=='+' || line[1]=='-')){
+            int cur = (int)player.volume();
+            if(line[1]=='+') cur++; else cur--;
+            if(cur<0) cur=0; if(cur>Player::DF_VOLUME_MAX) cur=Player::DF_VOLUME_MAX;
+            player.setVolume((uint8_t)cur);
+            Serial.print(F("[CLI] volume=")); Serial.println(player.volume());
+          } else {
+            // v<number>
+            String digits;
+            for(uint16_t i=1;i<line.length();++i){
+              char ch=line[i];
+              if(ch>='0' && ch<='9') digits += ch;
+              else if(ch!=' ') { digits=""; break; }
+            }
+            long v = digits.length()?digits.toInt():-1;
+            if(v>=0 && v<=Player::DF_VOLUME_MAX){
+              player.setVolume((uint8_t)v);
+              Serial.print(F("[CLI] volume set to ")); Serial.println(player.volume());
+            } else {
+              DBG(F("[CLI] volume: v0..v30, v+, v-, v?"));
+            }
+          }
         } else {
-          DBG(F("[CLI] Commands: p1..p30"));
+          DBG(F("[CLI] Commands: p1..p30, v0..v30, v+, v-, v?"));
         }
       }
       line = "";
@@ -90,7 +119,7 @@ void parseCLI(){
 void setup(){
   Serial.begin(115200);
   delay(80);
-  DBG(F("Welcome + CCID DFPlayer starting (dedup reader + CLI)..."));
+  DBG(F("Welcome + CCID DFPlayer starting (dedup + CLI + volume)..."));
 
   if(!canbus.begin()){
     DBG(F("MCP2515 init FAIL."));
@@ -100,11 +129,12 @@ void setup(){
 
   player.setBenchMode(false);
   player.begin();
-  DBG(F("Player ready. Type p1..p30 + Enter"));
+  Serial.print(F("Player ready. CLI: p1..p30, v0..v30, v+, v-, v?  (vol="));
+  Serial.print(player.volume()); Serial.println(')');
 }
 
 void loop(){
-  // Manual serial first (user control should feel snappy)
+  // Manual serial first
   parseCLI();
 
   // CAN processing: distinct frames only

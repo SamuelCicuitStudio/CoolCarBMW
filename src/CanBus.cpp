@@ -74,7 +74,6 @@ bool CanBus::readOnceDistinct(uint32_t &id, uint8_t &len, uint8_t *buf){
       pushHistory(id, len, buf, now);
       return true;
     }
-    // else: duplicate → keep draining
   }
   return false;
 }
