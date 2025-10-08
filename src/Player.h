@@ -7,7 +7,7 @@
 
 class Player {
 public:
-  static const uint8_t  DF_VOLUME_DEFAULT = 24;
+  static const uint8_t  DF_VOLUME_DEFAULT = 12;
   static const uint8_t  DF_VOLUME_MAX     = 30;
   static const uint16_t DF_WAKE_MS = 100;
   static const uint16_t AMP_ON_AFTER_BUSY_MS = 60;
