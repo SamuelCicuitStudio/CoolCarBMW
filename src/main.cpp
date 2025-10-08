@@ -46,75 +46,87 @@ bool seatbeltActive=false;
 static inline bool timeBefore(uint32_t deadline){ return (int32_t)(millis() - deadline) < 0; }
 
 // --- Simple Serial CLI: play + volume ---
+// Robust to CR, LF, and CRLF endings; no unterminated char literals.
 void parseCLI(){
   static String line;
-  while(Serial.available()){
+
+  while (Serial.available()) {
     char c = (char)Serial.read();
-    if(c=='') continue;
-    if(c=='
-'){
+
+    // Normalize line endings:
+    // If we get '\r' (CR), convert to '\n' and swallow the following '\n' if present (CRLF).
+    if (c == '\r') {
+      if (Serial.peek() == '\n') (void)Serial.read(); // eat LF after CR
+      c = '\n';
+    }
+
+    if (c == '\n') {
       line.trim();
-      if(line.length()){
+      if (line.length()) {
         char cmd = line[0];
-        if(cmd=='p' || cmd=='P'){
-          // Play command p1..p30
+
+        if (cmd == 'p' || cmd == 'P') {
+          // Play: p1..p30
           String digits;
-          for(uint16_t i=1;i<line.length();++i){
-            char ch=line[i];
-            if(ch>='0' && ch<='9') digits += ch;
-            else if(ch!=' ') { digits=""; break; }
+          for (uint16_t i = 1; i < line.length(); ++i) {
+            char ch = line[i];
+            if (ch >= '0' && ch <= '9') digits += ch;
+            else if (ch != ' ') { digits = ""; break; }
           }
-          long n = digits.length()?digits.toInt():-1;
-          if(n>=1 && n<=30){
-            if(player.isPlaying()){
-              if(player.currentTrack()!=1 || n==1){
+          long n = digits.length() ? digits.toInt() : -1;
+          if (n >= 1 && n <= 30) {
+            if (player.isPlaying()) {
+              if (player.currentTrack() != 1 || n == 1) {
                 player.stop();
                 player.playTrack((uint16_t)n);
               }
             } else {
               player.playTrack((uint16_t)n);
             }
-            if(DEBUG_PRINTS){ Serial.print(F("[CLI] play ")); Serial.println(n); }
+            if (DEBUG_PRINTS) { Serial.print(F("[CLI] play ")); Serial.println(n); }
           } else {
-            DBG(F("[CLI] Use p1..p30"));
+            if (DEBUG_PRINTS) Serial.println(F("[CLI] Use p1..p30"));
           }
-        } else if(cmd=='v' || cmd=='V'){
-          // Volume command
-          if(line.length()==2 && (line[1]=='?' )){
+
+        } else if (cmd == 'v' || cmd == 'V') {
+          // Volume: v0..v30, v+, v-, v?
+          if (line.length() == 2 && (line[1] == '?')) {
             Serial.print(F("[CLI] volume=")); Serial.println(player.volume());
-          } else if(line.length()==2 && (line[1]=='+' || line[1]=='-')){
+          } else if (line.length() == 2 && (line[1] == '+' || line[1] == '-')) {
             int cur = (int)player.volume();
-            if(line[1]=='+') cur++; else cur--;
-            if(cur<0) cur=0; if(cur>Player::DF_VOLUME_MAX) cur=Player::DF_VOLUME_MAX;
+            if (line[1] == '+') cur++; else cur--;
+            if (cur < 0) cur = 0;
+            if (cur > Player::DF_VOLUME_MAX) cur = Player::DF_VOLUME_MAX;
             player.setVolume((uint8_t)cur);
             Serial.print(F("[CLI] volume=")); Serial.println(player.volume());
           } else {
-            // v<number>
             String digits;
-            for(uint16_t i=1;i<line.length();++i){
-              char ch=line[i];
-              if(ch>='0' && ch<='9') digits += ch;
-              else if(ch!=' ') { digits=""; break; }
+            for (uint16_t i = 1; i < line.length(); ++i) {
+              char ch = line[i];
+              if (ch >= '0' && ch <= '9') digits += ch;
+              else if (ch != ' ') { digits = ""; break; }
             }
-            long v = digits.length()?digits.toInt():-1;
-            if(v>=0 && v<=Player::DF_VOLUME_MAX){
+            long v = digits.length() ? digits.toInt() : -1;
+            if (v >= 0 && v <= Player::DF_VOLUME_MAX) {
               player.setVolume((uint8_t)v);
               Serial.print(F("[CLI] volume set to ")); Serial.println(player.volume());
             } else {
-              DBG(F("[CLI] volume: v0..v30, v+, v-, v?"));
+              if (DEBUG_PRINTS) Serial.println(F("[CLI] volume: v0..v30, v+, v-, v?"));
             }
           }
+
         } else {
-          DBG(F("[CLI] Commands: p1..p30, v0..v30, v+, v-, v?"));
+          if (DEBUG_PRINTS) Serial.println(F("[CLI] Commands: p1..p30, v0..v30, v+, v-, v?"));
         }
       }
-      line = "";
+      line = ""; // reset buffer after processing a line
     } else {
-      line += c;
-      if(line.length()>32) line.remove(0, line.length()-32);
+      line += c;                          // accumulate
+      if (line.length() > 32) line.remove(0, line.length() - 32); // cap buffer
     }
   }
 }
+
 
 void setup(){
   Serial.begin(115200);
