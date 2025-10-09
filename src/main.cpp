@@ -1,16 +1,13 @@
 /*
   Main logic: Welcome / CC-ID player / Seatbelt / Low-fuel reminder / Goodbye / Radio / KOMBI sweep
-  + DFPlayer MOSFET power via PIN_DF_EN (Pins.h)
+  + Priority queue for deferred (lower-priority) sounds
 
   Priorities (higher wins):
      3 = Welcome
-     2 = CC-ID (including generic gong 14)
+     2 = CC-ID (incl. generic gong 14, low-fuel T45, handbrake T50, goodbye 46-49)
      1 = Seatbelt (track 2 – loops while active)
-
-  Select DFPlayer power policy:
-    1 = Power ON right before playing audio; OFF after idle timeout
-    2 = Power ON when CAN traffic is detected; OFF after CAN silence
 */
+
 #include <Arduino.h>
 #include "Pins.h"
 #include "CanBus.h"
@@ -18,27 +15,12 @@
 #include "CCIDMap.h"
 
 // =================== CONFIG ===================
-#define DF_PWR_MODE 1          // <-- set to 1 or 2
 static const bool DEBUG_PRINTS = true;
+static inline void DBG(const __FlashStringHelper* s){ if(DEBUG_PRINTS) Serial.println(s); }
 
 static const uint32_t WELCOME_WINDOW_MS = 120000UL; // 2 minutes
-#ifndef PIN_RADIO_HOLD
-#define PIN_RADIO_HOLD 9       // radio keep-alive
-#endif
-
-// DFPlayer power (MOSFET gate) comes from Pins.h
-//   PIN_DF_EN: HIGH = ON, LOW = OFF  (see Pins.h)
-static const uint32_t DF_WAKE_MS = 80;     // power-up settle for DFPlayer
-
-// Mode 1 idle timeout (no audio playing)
-static const uint32_t DF_IDLE_OFF_MS = 3000;
-
-// Mode 2 CAN silence thresholds
-static const uint32_t CAN_SILENCE_OFF_MS = 8000;
-static const uint32_t CAN_WAKE_DEBOUNCE_MS = 50;
 
 // =================== UTILS ===================
-static inline void DBG(const __FlashStringHelper* s){ if(DEBUG_PRINTS) Serial.println(s); }
 static inline bool timeBefore(uint32_t deadline){ return (int32_t)(millis() - (int32_t)deadline) < 0; }
 
 // =================== GLOBALS ===================
@@ -67,21 +49,8 @@ bool     lowFuelSeenWhileIgnOn = false; // set if low fuel CCID fired with KL15 
 bool     lowFuelRemindArmed    = false; // armed at KL15->OFF; play track 45 once on driver-door open
 
 // Radio (GPIO9) + low-battery inhibit
-bool radioHoldActive = false;          // keep radio HIGH until LOCK after KL15 off
 bool radioUnlockedWaitingDoor = false; // after UNLOCK, set HIGH on first door open (unless low-batt CCID active)
 bool lowBatteryActive = false;         // active low-batt CCID inhibits radio HIGH on unlock
-
-// DFPlayer power helpers
-static inline void dfpPower(bool on){
-  digitalWrite(PIN_DF_EN, on ? HIGH : LOW);
-  if(DEBUG_PRINTS){ Serial.print(F("[DFP_PWR] ")); Serial.println(on?F("ON"):F("OFF")); }
-}
-static uint32_t lastAudioUseMs = 0;
-static inline void noteAudioUsed(){ lastAudioUseMs = millis(); }
-
-#if DF_PWR_MODE==2
-static uint32_t lastCanSeenMs = 0;
-#endif
 
 // =================== CLI (optional) ===================
 void parseCLI(){
@@ -97,13 +66,8 @@ void parseCLI(){
           String digits; for(uint16_t i=1;i<line.length();++i){ char ch=line[i]; if(ch>='0'&&ch<='9') digits+=ch; else if(ch!=' ') { digits=""; break; } }
           long n = digits.length()?digits.toInt():-1;
           if(n>=1 && n<=DF_MAX_MP3){
-            #if DF_PWR_MODE==1
-              dfpPower(true); delay(DF_WAKE_MS); player.begin();
-            #elif DF_PWR_MODE==2
-              if (digitalRead(PIN_DF_EN)==LOW){ dfpPower(true); delay(CAN_WAKE_DEBOUNCE_MS); player.begin(); }
-            #endif
             if(player.isPlaying()) player.stop();
-            player.playTrack((uint16_t)n); noteAudioUsed();
+            player.playTrack((uint16_t)n);
           }
         } else if(cmd=='v' || cmd=='V'){
           if(line.length()==2 && (line[1]=='?')){ Serial.print(F("[CLI] volume=")); Serial.println(player.volume()); }
@@ -126,25 +90,15 @@ void parseCLI(){
 enum class NowPlaying : uint8_t { None, Welcome, Ccid, Seatbelt };
 NowPlaying nowPlaying = NowPlaying::None;
 
-static inline void ensureDfpOnBeforePlay(){
-#if DF_PWR_MODE==1
-  if (digitalRead(PIN_DF_EN)==LOW){ dfpPower(true); delay(DF_WAKE_MS); player.begin(); }
-#elif DF_PWR_MODE==2
-  if (digitalRead(PIN_DF_EN)==LOW){ dfpPower(true); delay(CAN_WAKE_DEBOUNCE_MS); player.begin(); }
-#endif
-}
-
 void playWelcome(){
-  ensureDfpOnBeforePlay();
   if(player.isPlaying()) player.stop();
-  player.playTrack(1); noteAudioUsed();
+  player.playTrack(1);
   nowPlaying = NowPlaying::Welcome;
   DBG(F("[PLAY] Welcome T1"));
 }
 void playCcid(uint16_t tr){
-  ensureDfpOnBeforePlay();
   if(player.isPlaying()) player.stop();
-  player.playTrack(tr); noteAudioUsed();
+  player.playTrack(tr);
   nowPlaying = NowPlaying::Ccid;
   Serial.print(F("[PLAY] CCID T")); Serial.println(tr);
 }
@@ -152,10 +106,9 @@ void ensureSeatbeltLoop(){
   if(!seatbeltActive) return;
   if(nowPlaying == NowPlaying::Welcome) return; // let welcome finish
   if(nowPlaying == NowPlaying::Ccid)    return; // CCID has higher priority
-  ensureDfpOnBeforePlay();
   if(!player.isPlaying() || player.currentTrack()!=2){
     if(player.isPlaying()) player.stop();
-    player.playTrack(2); noteAudioUsed();
+    player.playTrack(2);
     nowPlaying = NowPlaying::Seatbelt;
     DBG(F("[PLAY] Seatbelt T2 loop"));
   }
@@ -170,21 +123,82 @@ static inline void radioSet(bool on){
   if(DEBUG_PRINTS){ Serial.print(F("[RADIO] ")); Serial.println(on?F("HIGH"):F("LOW")); }
 }
 
+// ===== Pending audio queue (priority-based) =====
+enum class AlertKind : uint8_t { Welcome, Ccid, LowFuel, Handbrake, Goodbye };
+struct Alert {
+  uint8_t   prio;        // 1..3 (3 highest)
+  uint16_t  track;       // track to play
+  AlertKind kind;        // type, for sanity/filters
+  uint16_t  ccid;        // only for CCID (else 0)
+  uint32_t  t_ms;        // when enqueued
+};
+
+static const uint8_t PQUEUE_CAP = 10;
+Alert pqueue[PQUEUE_CAP];
+uint8_t pqCount = 0;
+
+// still-valid guard at playback time
+static bool alertStillValid(const Alert& a){
+  switch(a.kind){
+    case AlertKind::Ccid:      return (lastStatus==0x02 && lastCcid==a.ccid);
+    case AlertKind::Welcome:   return welcomeArmed && (welcomeHold || timeBefore(welcomeDeadline));
+    case AlertKind::LowFuel:   return (!kl15On && lowFuelRemindArmed);
+    case AlertKind::Handbrake: return !canbus.handbrakeEngaged();
+    case AlertKind::Goodbye:   return (!kl15On && lastStatus != 0x02);
+  }
+  return true;
+}
+static void pqPush(uint8_t prio, uint16_t track, AlertKind kind, uint16_t ccid = 0){
+  if(pqCount >= PQUEUE_CAP){ for(uint8_t i=1;i<pqCount;i++) pqueue[i-1]=pqueue[i]; pqCount--; }
+  pqueue[pqCount++] = { prio, track, kind, ccid, millis() };
+}
+static bool pqPopNext(Alert &out){
+  if(pqCount==0) return false;
+  int idx=-1;
+  for(uint8_t i=0;i<pqCount;i++){
+    if(idx==-1) idx=i;
+    else{
+      if(pqueue[i].prio > pqueue[idx].prio) idx=i;
+      else if(pqueue[i].prio == pqueue[idx].prio && (int32_t)(pqueue[i].t_ms - pqueue[idx].t_ms) < 0) idx=i;
+    }
+  }
+  out = pqueue[idx];
+  for(uint8_t i=idx+1;i<pqCount;i++) pqueue[i-1]=pqueue[i];
+  pqCount--;
+  return true;
+}
+static bool playNextFromQueue(){
+  Alert a;
+  while (pqPopNext(a)){
+    if(alertStillValid(a)){
+      if(player.isPlaying()) player.stop();
+      player.playTrack(a.track);
+      switch(a.kind){
+        case AlertKind::Welcome:   nowPlaying = NowPlaying::Welcome;  break;
+        case AlertKind::Ccid:      nowPlaying = NowPlaying::Ccid;     break;
+        case AlertKind::LowFuel:   nowPlaying = NowPlaying::Ccid;     break;
+        case AlertKind::Handbrake: nowPlaying = NowPlaying::Ccid;     break;
+        case AlertKind::Goodbye:   nowPlaying = NowPlaying::Ccid;     break;
+      }
+      return true;
+    }
+  }
+  return false;
+}
+
 // =================== SETUP ===================
 void setup(){
   Serial.begin(115200);
   delay(100);
-  DBG(F("Starting main: Welcome/CCID/Seatbelt/Fuel/Goodbye/Radio + KOMBI + DF MOSFET"));
+  DBG(F("Starting main: Welcome/CCID/Seatbelt/Fuel/Goodbye/Radio + KOMBI + Queue"));
 
   // Pins
   pinMode(PIN_RADIO_HOLD, OUTPUT);   radioSet(false);
-  pinMode(PIN_DF_EN, OUTPUT);        dfpPower(false);   // DFPlayer off initially
-  pinMode(PIN_SPK_RELAY, OUTPUT);    digitalWrite(PIN_SPK_RELAY, LOW); // speaker relay off to avoid pops
+  pinMode(PIN_SPK_RELAY, OUTPUT);    digitalWrite(PIN_SPK_RELAY, LOW); // anti-pop
 
   // CAN
   if(!canbus.begin()){
-    DBG(F("MCP2515 init FAIL"));
-    while(1) delay(1000);
+    DBG(F("MCP2515 init FAIL")); while(1) delay(1000);
   }
   DBG(F("MCP2515 OK (8MHz, 100kbps)"));
 
@@ -196,7 +210,7 @@ void setup(){
 
   // DFPlayer
   player.setBenchMode(false);
-  // NOTE: Player.begin() is called after we power the MOSFET (see play paths)
+  player.begin(); // initializes pins; DF power remains OFF until playTrack() (handled in Player.cpp)  :contentReference[oaicite:6]{index=6}
 
   // RNG
   randomSeed(analogRead(A0));
@@ -209,25 +223,19 @@ void loop(){
   // 1) CAN ingest
   uint32_t id; uint8_t len; uint8_t buf[8];
   while (canbus.readOnceDistinct(id,len,buf)) {
-#if DF_PWR_MODE==2
-    // Wake DFPlayer upon first CAN seen (if off), then init it
-    lastCanSeenMs = millis();
-    if (digitalRead(PIN_DF_EN)==LOW){ dfpPower(true); delay(CAN_WAKE_DEBOUNCE_MS); player.begin(); }
-#endif
     canbus.onFrame(id,len,buf);
 
     // KL15 observe (same byte your CanBus uses)
     if(id == ID_KL15 && len>=1){
       kl15Prev = kl15On;
-      kl15On = ((buf[0] & 0x04)!=0) || ((buf[0] & 0x08)!=0); // RUN/START considered ON
+      // RUN or START means ON (ACC not used here for sweep)
+      kl15On = ((buf[0] & 0x04)!=0) || ((buf[0] & 0x08)!=0);
       if(kl15Prev && !kl15On){
         // Ignition just turned OFF
-        radioHoldActive = true;
-        radioSet(true); // keep radio alive until LOCK
         if(lowFuelSeenWhileIgnOn){
           lowFuelRemindArmed = true; // play 45 once on next driver-door open
         }
-        DBG(F("[KL15] OFF; radio hold ON; fuel remind armed?"));
+        DBG(F("[KL15] OFF; fuel remind armed?"));
       } else if(!kl15Prev && kl15On){
         // Ignition just turned ON -> reset goodbye + remind arming
         lowFuelRemindArmed = false;
@@ -236,7 +244,7 @@ void loop(){
       }
     }
 
-    //  CC-ID frames (0x338 ... FE FE FE)
+    // CC-ID frames (0x338 ... FE FE FE)
     if(id == ID_CCID && len>=8 && buf[5]==0xFE && buf[6]==0xFE && buf[7]==0xFE){
       const uint16_t ccid = (uint16_t(buf[1])<<8) | buf[0];
       const uint8_t  st   = buf[2]; // 0x02 ACTIVE, 0x01 CLEARED
@@ -254,14 +262,14 @@ void loop(){
           if(nowPlaying == NowPlaying::Seatbelt) nowPlaying = NowPlaying::None;
         }
       } else {
-        // Low-fuel + low-battery tracking
+        // Track low-fuel + low-battery
         if(isLowFuelCCID(ccid)){
           if(st==0x02 && kl15On)  lowFuelSeenWhileIgnOn = true;
           else if(st==0x01)       lowFuelSeenWhileIgnOn = false;
         }
         if(isLowBatteryCCID(ccid)){
           lowBatteryActive = (st==0x02);
-          if(lowBatteryActive) radioSet(false); // inhibit radio on low-batt
+          // (radio inhibit handled on unlock first door)
         }
 
         // Play once per activation until cleared
@@ -271,9 +279,11 @@ void loop(){
           if(armed){
             const uint16_t tr = trackForCcid(ccid); // default 14 for unknowns
             if(nowPlaying == NowPlaying::Welcome){
-              // Welcome first; CC-ID will replay if still active later (once cleared/active again)
+              // defer CC-ID while welcome is active
+              pqPush(2, tr, AlertKind::Ccid, ccid);
             } else {
-              stopIfTrack(2); // preempt seatbelt
+              // CC-ID preempts seatbelt
+              stopIfTrack(2);
               playCcid(tr);
             }
           }
@@ -295,10 +305,8 @@ void loop(){
       radioUnlockedWaitingDoor = true;
       DBG(F("[KEY] UNLOCK -> welcome armed; radio waits door"));
     } else if(kev.type == CanBus::KeyEventType::Lock){
-      radioHoldActive = false;
       radioUnlockedWaitingDoor = false;
-      radioSet(false);
-      DBG(F("[KEY] LOCK -> radio OFF; goodbye context cleared"));
+      DBG(F("[KEY] LOCK"));
     }
   }
 
@@ -316,7 +324,7 @@ void loop(){
       dev.type==CanBus::DoorEventType::BonnetOpened;
 
     if(anyOpen && radioUnlockedWaitingDoor){
-      if(!lowBatteryActive){ radioSet(true); }
+      if(!lowBatteryActive){ radioSet(true); } // turn on radio unless battery low CCID active
       radioUnlockedWaitingDoor = false;
     }
 
@@ -334,22 +342,26 @@ void loop(){
     // HANDBRAKE T50 on driver door open (unless welcome just won)
     if(driverOpen && !canbus.handbrakeEngaged()){
       if(!welcomeArmed && nowPlaying != NowPlaying::Welcome){
-        ensureDfpOnBeforePlay();
         if(player.isPlaying()) player.stop();
-        player.playTrack(50); noteAudioUsed();
+        player.playTrack(50);
         nowPlaying = NowPlaying::Ccid;
         DBG(F("[PLAY] Handbrake warning T50"));
+      } else if (nowPlaying == NowPlaying::Welcome){
+        pqPush(2, 50, AlertKind::Handbrake);
       }
     }
 
     // LOW-FUEL REMINDER T45 once after KL15 OFF on next driver-door open
     if(driverOpen && !kl15On && lowFuelRemindArmed){
-      if(!(player.isPlaying() && player.currentTrack()==1)){ // if not welcome
-        ensureDfpOnBeforePlay();
-        if(player.isPlaying()) player.stop();
-        player.playTrack(45); noteAudioUsed();
-        nowPlaying = NowPlaying::Ccid;
-        DBG(F("[PLAY] Low-fuel reminder T45"));
+      if(!(player.isPlaying() && player.currentTrack()==1)){ // not welcome
+        if (nowPlaying == NowPlaying::Welcome){
+          pqPush(2, 45, AlertKind::LowFuel);
+        } else {
+          if(player.isPlaying()) player.stop();
+          player.playTrack(45);
+          nowPlaying = NowPlaying::Ccid;
+          DBG(F("[PLAY] Low-fuel reminder T45"));
+        }
         lowFuelRemindArmed = false; // single-shot
       }
     }
@@ -367,11 +379,14 @@ void loop(){
           }
         }
         if(tr){
-          ensureDfpOnBeforePlay();
-          if(player.isPlaying()) player.stop();
-          player.playTrack(tr); noteAudioUsed();
-          nowPlaying = NowPlaying::Ccid;
-          Serial.print(F("[PLAY] Goodbye T")); Serial.println(tr);
+          if (nowPlaying == NowPlaying::Welcome){
+            pqPush(2, tr, AlertKind::Goodbye);
+          } else {
+            if(player.isPlaying()) player.stop();
+            player.playTrack(tr);
+            nowPlaying = NowPlaying::Ccid;
+            Serial.print(F("[PLAY] Goodbye T")); Serial.println(tr);
+          }
         }
       }
     }
@@ -387,19 +402,19 @@ void loop(){
   ensureSeatbeltLoop();
 
   // 6) KOMBI sweep heartbeat + DFPlayer service
-  canbus.tickSweep();
-  player.loop();
+  canbus.tickSweep();            // sweep state machine (KL15-controlled)  :contentReference[oaicite:7]{index=7}
+  player.loop();                 // detects end-of-track via BUSY pin      :contentReference[oaicite:8]{index=8}
 
-  // 7) DFPlayer power management according to mode
-#if DF_PWR_MODE==1
-  if(!player.isPlaying() && (millis() - lastAudioUseMs) > DF_IDLE_OFF_MS){
-    if (digitalRead(PIN_DF_EN)==HIGH){ dfpPower(false); }
+  // 7) If a track just finished, drain queue or resume seatbelt
+  static bool wasPlaying = false;
+  bool isNowPlaying = player.isPlaying();
+  if (wasPlaying && !isNowPlaying) {
+    if (!playNextFromQueue()) {
+      ensureSeatbeltLoop();
+      nowPlaying = NowPlaying::None;
+    }
   }
-#elif DF_PWR_MODE==2
-  if ((millis() - lastCanSeenMs) > CAN_SILENCE_OFF_MS && !player.isPlaying()){
-    if (digitalRead(PIN_DF_EN)==HIGH){ dfpPower(false); }
-  }
-#endif
+  wasPlaying = isNowPlaying;
 
   delay(2);
 }
