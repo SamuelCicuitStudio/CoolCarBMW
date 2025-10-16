@@ -37,7 +37,7 @@ bool passengerSeenSinceUnlock = false;
 // Global: passenger-seat occupancy (updated from AirBag frames)
 bool passengerSeated = false;
 
-// NEW: Confirm passenger only if seat becomes occupied AFTER passenger door opened
+// Confirm passenger only if seat becomes occupied AFTER passenger door opened
 bool passengerEnterConfirmed = false;      // true means a real passenger was detected (door->then seat)
 bool passengerSeatArmedByDoorOpen = false; // set when passenger door opens while seat is empty
 
@@ -54,7 +54,7 @@ bool     kl15Prev = false;
 bool     lowFuelSeenWhileIgnOn = false; // set if low fuel CCID fired with KL15 ON
 bool     lowFuelRemindArmed    = false; // armed at KL15->OFF; play track 45 once on next driver-door open
 
-// --- NEW: KL15 raw tracking & engine-stop Goodbye arming ---
+// --- KL15 raw tracking & engine-stop Goodbye arming ---
 uint8_t  kl15Raw = 0x00;                 // last seen raw KL15 byte (e.g., 0x00, 0x40, 0x41, 0x45, 0x55)
 uint8_t  kl15Hist[4] = {0,0,0,0};        // circular history (newest write index is kl15HistIdx-1)
 uint8_t  kl15HistIdx = 0;                // increments on each new sample
@@ -269,7 +269,7 @@ void loop(){
     if(id == ID_KL15 && len>=1){
       const uint8_t v = buf[0];
 
-      // --- NEW: detect RUN/CRANK -> {0x40,0x00} to arm Goodbye ---
+      // detect RUN/CRANK -> {0x40,0x00} to arm Goodbye
       const bool wasRunLike = kl15IsRunVal(kl15Raw);
       const bool nowRunLike = kl15IsRunVal(v);
       kl15Push(v);
@@ -435,19 +435,20 @@ void loop(){
       }
     }
 
-    // GOODBYE variants when engine just stopped (RUN->40/00) and no CCID active
-    if(anyOpen && !kl15On && engineStopGoodbyeArmed){
+    // ======= GOODBYE: trigger ONLY on driver door after a stop; choose driver vs driver+passenger =======
+    if(driverOpen && !kl15On && engineStopGoodbyeArmed){
       const bool anyCcidActive = (lastStatus==0x02);
       if(!anyCcidActive && !lowFuelRemindArmed){
         uint16_t tr = 0;
-        if(driverOpen || passengerOpen){
-          // Use confirmed passenger presence (door->then seat) to choose passenger goodbye.
-          if (passengerEnterConfirmed){
-            tr = (random(0,2)==0) ? 48 : 49; // passenger goodbye set
-          } else if(driverOpen){
-            tr = (random(0,2)==0) ? 46 : 47; // driver-only goodbye set
-          }
+
+        if (passengerEnterConfirmed){
+          // Driver + passenger
+          tr = (random(0,2)==0) ? 48 : 49;   // goodbye driver & passenger / 2
+        } else {
+          // Driver only
+          tr = (random(0,2)==0) ? 46 : 47;   // goodbye driver / 2
         }
+
         if(tr){
           if (nowPlaying == NowPlaying::Welcome){
             pqPush(2, tr, AlertKind::Goodbye);
@@ -460,7 +461,7 @@ void loop(){
           engineStopGoodbyeArmed = false; // consume the armed Goodbye
         }
       }
-      // If CCID/lowFuel blocked it, keep it armed until a clean door-open opportunity.
+      // If CCID/lowFuel blocked it, keep it armed until a clean driver-door open opportunity.
     }
   }
 
