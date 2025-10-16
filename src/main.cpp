@@ -34,6 +34,12 @@ uint32_t welcomeDeadline = 0;
 
 // Passenger detection since unlock (for goodbye variants)
 bool passengerSeenSinceUnlock = false;
+// Global: passenger-seat occupancy (updated from AirBag frames)
+bool passengerSeated = false;
+
+// NEW: Confirm passenger only if seat becomes occupied AFTER passenger door opened
+bool passengerEnterConfirmed = false;      // true means a real passenger was detected (door->then seat)
+bool passengerSeatArmedByDoorOpen = false; // set when passenger door opens while seat is empty
 
 // Seatbelt state
 bool seatbeltActive = false;
@@ -46,7 +52,7 @@ uint8_t  lastStatus = 0xFF;  // 0x02 active, 0x01 cleared
 bool     kl15On = false;
 bool     kl15Prev = false;
 bool     lowFuelSeenWhileIgnOn = false; // set if low fuel CCID fired with KL15 ON
-bool     lowFuelRemindArmed    = false; // armed at KL15->OFF; play track 45 once on driver-door open
+bool     lowFuelRemindArmed    = false; // armed at KL15->OFF; play track 45 once on next driver-door open
 
 // --- NEW: KL15 raw tracking & engine-stop Goodbye arming ---
 uint8_t  kl15Raw = 0x00;                 // last seen raw KL15 byte (e.g., 0x00, 0x40, 0x41, 0x45, 0x55)
@@ -223,7 +229,7 @@ void setup(){
 
   // DFPlayer
   player.setBenchMode(false);
-  player.begin(); // initializes pins; DF power remains OFF until playTrack() (handled in Player.cpp)  :contentReference[oaicite:6]{index=6}
+  player.begin(); // initializes pins; DF power remains OFF until playTrack() (handled in Player.cpp)
 
   // RNG
   randomSeed(analogRead(A0));
@@ -238,13 +244,25 @@ void loop(){
   while (canbus.readOnceDistinct(id,len,buf)) {
     canbus.onFrame(id,len,buf);
 
-    // --- AirBag / Passenger detection ---
+    // --- AirBag / Passenger detection (print only on change) ---
     if (id == ID_AirBag && len >= 2) {
-      bool passengerSeated = bitRead(buf[1], 3);  // bit 3 of 2nd byte
-      if (passengerSeated)
-        Serial.println(F("[AirBag] Passenger seated"));
-      else
-        Serial.println(F("[AirBag] Passenger not seated"));
+      const bool newPassengerSeated = bitRead(buf[1], 3);  // bit 3 of second byte
+      if (newPassengerSeated != passengerSeated) {
+        passengerSeated = newPassengerSeated;
+        if (passengerSeated) {
+          DBG(F("[AirBag] Passenger seated"));
+          // Confirm passenger presence only if seat became occupied AFTER passenger door previously opened
+          if (passengerSeatArmedByDoorOpen) {
+            passengerEnterConfirmed = true;
+            passengerSeatArmedByDoorOpen = false; // consume the arm
+            DBG(F("[AirBag] Passenger CONFIRMED (door->seat)"));
+          }
+        } else {
+          DBG(F("[AirBag] Passenger not seated"));
+          // If seat became empty, allow a new confirmation on a future passenger-door open
+          // (no change to passengerEnterConfirmed; that stays true for this trip once confirmed)
+        }
+      }
     }
 
     // KL15 observe (same byte your CanBus uses)
@@ -280,6 +298,8 @@ void loop(){
         // Ignition just turned ON -> reset goodbye + remind arming
         lowFuelRemindArmed = false;
         passengerSeenSinceUnlock = false;
+        passengerEnterConfirmed = false;      // reset per trip
+        passengerSeatArmedByDoorOpen = false; // reset the arm
         DBG(F("[KL15] ON"));
         canbus.enableSweep(true);
       }
@@ -343,6 +363,8 @@ void loop(){
       welcomeHold    = false;
       welcomeDeadline = millis() + WELCOME_WINDOW_MS;
       passengerSeenSinceUnlock = false;
+      passengerEnterConfirmed = false;      // reset on unlock
+      passengerSeatArmedByDoorOpen = false; // clear arm
       radioUnlockedWaitingDoor = true;
       DBG(F("[KEY] UNLOCK -> welcome armed; radio waits door"));
     } else if(kev.type == CanBus::KeyEventType::Lock){
@@ -369,7 +391,12 @@ void loop(){
       radioUnlockedWaitingDoor = false;
     }
 
-    if(passengerOpen) passengerSeenSinceUnlock = true;
+    if(passengerOpen){
+      passengerSeenSinceUnlock = true;
+      // Arm a passenger confirmation only if the seat is currently empty;
+      // we will confirm when AirBag later flips to seated.
+      passengerSeatArmedByDoorOpen = !passengerSeated;
+    }
 
     // WELCOME (priority 3): only on driver door, within window or held by non-driver opens
     // SUPPRESS welcome if a Goodbye is armed (engine just stopped)
@@ -414,10 +441,11 @@ void loop(){
       if(!anyCcidActive && !lowFuelRemindArmed){
         uint16_t tr = 0;
         if(driverOpen || passengerOpen){
-          if(passengerSeenSinceUnlock){
-            tr = (random(0,2)==0) ? 48 : 49;
+          // Use confirmed passenger presence (door->then seat) to choose passenger goodbye.
+          if (passengerEnterConfirmed){
+            tr = (random(0,2)==0) ? 48 : 49; // passenger goodbye set
           } else if(driverOpen){
-            tr = (random(0,2)==0) ? 46 : 47;
+            tr = (random(0,2)==0) ? 46 : 47; // driver-only goodbye set
           }
         }
         if(tr){
@@ -446,8 +474,8 @@ void loop(){
   ensureSeatbeltLoop();
 
   // 6) KOMBI sweep heartbeat + DFPlayer service
-  canbus.tickSweep();            // sweep state machine (KL15-controlled)  :contentReference[oaicite:7]{index=7}
-  player.loop();                 // detects end-of-track via BUSY pin      :contentReference[oaicite:8]{index=8}
+  canbus.tickSweep();            // sweep state machine (KL15-controlled)
+  player.loop();                 // detects end-of-track via BUSY pin
 
   // 7) If a track just finished, drain queue or resume seatbelt
   static bool wasPlaying = false;
