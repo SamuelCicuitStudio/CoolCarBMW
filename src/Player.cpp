@@ -13,6 +13,7 @@ void Player::begin(){
   digitalWrite(PIN_SPK_RELAY, LOW);
   _relayOn = false;
 
+  // Keep the DF powered down until first play (same behavior)
   digitalWrite(PIN_DF_EN, LOW);
   _dfPowered = false;
 }
@@ -23,12 +24,13 @@ void Player::setVolume(uint8_t v){
   if(v > DF_VOLUME_MAX) v = DF_VOLUME_MAX;
   _volume = v;
   if(_dfPowered){
-    _df.volume(_volume);
+    _df.setVolume(_volume);   // DFPMini API
     dfDrain(10);
   }
 }
 
 bool Player::ensureReady(){
+  // Speaker relay off before we touch the module (same behavior)
   digitalWrite(PIN_SPK_RELAY, LOW);
   _relayOn = false;
 
@@ -37,18 +39,16 @@ bool Player::ensureReady(){
     _dfPowered = true;
     delay(DF_WAKE_MS);
   }
+
+  // Serial link up + DFPMini begin (hands it the BUSY pin + active-LOW)
   _ss.begin(9600);
   delay(10);
-  if(!_df.begin(_ss)){
-    digitalWrite(PIN_DF_EN, LOW); delay(300);
-    digitalWrite(PIN_DF_EN, HIGH); delay(DF_WAKE_MS);
-    _ss.begin(9600);
-    if(!_df.begin(_ss)) return false;
-  }
-  _df.setTimeOut(500);
-  _df.volume(_volume);
+  _df.begin(_ss, PIN_DF_BUSY, /*busyActiveLow=*/true);
+
+  // Default volume (like before)
+  _df.setVolume(_volume);
   dfDrain(50);
-  return true;
+  return true;  // DFPMini::begin() is non-failing; keep behavior flow same
 }
 
 bool Player::waitBusyLevel(int level, uint16_t timeout_ms){
@@ -63,8 +63,9 @@ bool Player::waitBusyLevel(int level, uint16_t timeout_ms){
 void Player::dfDrain(uint16_t ms){
   const uint32_t t0 = millis();
   while(!elapsedSince(t0, ms)){
-    if(_df.available()){ (void)_df.readType(); (void)_df.read(); }
-    else delay(2);
+    _df.update();                   // parse inbound frames
+    while(_df.available()) { (void)_df.readEvent(); }  // drain event queue
+    delay(2);
   }
 }
 
@@ -72,18 +73,26 @@ bool Player::playTrack(uint16_t track){
   if(track < 1) track = 1;
   if(track > DF_MAX_MP3) track = DF_MAX_MP3;
 
+  // Speaker relay off before starting a new track
   digitalWrite(PIN_SPK_RELAY, LOW);
   _relayOn = false;
 
   if(!ensureReady()) return false;
 
-  _df.playMp3Folder(track);
+  // Emulate DFRobot's playMp3Folder(track) using DF command 0x12
+  _df.send(0x12, track, /*feedback=*/false);
   dfDrain(8);
+
+  // Wait for BUSY to go LOW (playing). Retry once, like original.
   if(!waitBusyLevel(LOW, 100)){
-    _df.stop(); dfDrain(20);
-    _df.playMp3Folder(track); dfDrain(8);
+    _df.send(0x16, 0, false);   // STOP (cmd 0x16)
+    dfDrain(20);
+    _df.send(0x12, track, false);
+    dfDrain(8);
     if(!waitBusyLevel(LOW, 100)) return false;
   }
+
+  // Turn amp on slightly after BUSY asserted (same timing)
   delay(AMP_ON_AFTER_BUSY_MS);
   digitalWrite(PIN_SPK_RELAY, HIGH);
   _relayOn = true;
@@ -99,18 +108,26 @@ void Player::stop(){
     digitalWrite(PIN_SPK_RELAY, LOW);
     _relayOn = false;
   }
-  _df.stop();
+
+  // STOP via DFPMini raw send (0x16)
+  _df.send(0x16, 0, false);
   dfDrain(20);
+
+  // Wait for BUSY to release (HIGH)
   (void)waitBusyLevel(HIGH, 400);
+
+  // Power-down module in non-bench mode (same behavior)
   if(!_bench){
     digitalWrite(PIN_DF_EN, LOW);
     _dfPowered = false;
   }
+
   _playing = false;
   _currentTrack = 0;
 }
 
 void Player::loop(){
+  // Auto-stop when module reports idle via BUSY pin
   if(_playing && digitalRead(PIN_DF_BUSY) == HIGH){
     stop();
   }

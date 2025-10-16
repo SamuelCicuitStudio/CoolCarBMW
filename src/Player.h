@@ -1,7 +1,7 @@
 #pragma once
 #include <Arduino.h>
 #include <SoftwareSerial.h>
-#include "DFRobotDFPlayerMini.h"
+#include "DFPMini.h"        // swapped in: rely on your minimal DFPlayer driver
 #include "Pins.h"
 #include "CCIDMap.h"
 
@@ -33,7 +33,7 @@ private:
   void dfDrain(uint16_t ms);
 
   SoftwareSerial _ss;
-  DFRobotDFPlayerMini _df;
+  DFPMini _df;               // <— now using your DFPMini backend
 
   bool _bench=false;
   bool _dfPowered=false;
