@@ -238,6 +238,15 @@ void loop(){
   while (canbus.readOnceDistinct(id,len,buf)) {
     canbus.onFrame(id,len,buf);
 
+    // --- AirBag / Passenger detection ---
+    if (id == ID_AirBag && len >= 2) {
+      bool passengerSeated = bitRead(buf[1], 3);  // bit 3 of 2nd byte
+      if (passengerSeated)
+        Serial.println(F("[AirBag] Passenger seated"));
+      else
+        Serial.println(F("[AirBag] Passenger not seated"));
+    }
+
     // KL15 observe (same byte your CanBus uses)
     if(id == ID_KL15 && len>=1){
       const uint8_t v = buf[0];
@@ -272,6 +281,7 @@ void loop(){
         lowFuelRemindArmed = false;
         passengerSeenSinceUnlock = false;
         DBG(F("[KL15] ON"));
+        canbus.enableSweep(true);
       }
     }
 

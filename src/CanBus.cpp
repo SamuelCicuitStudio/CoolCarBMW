@@ -5,13 +5,16 @@ CanBus::CanBus(uint8_t csPin)
   for(uint8_t i=0;i<MAX_HISTORY;i++) _hist[i].valid=false;
 }
 
-bool CanBus::begin(){
-  pinMode(PIN_CAN_CS, OUTPUT); digitalWrite(PIN_CAN_CS, HIGH);
+bool CanBus::begin() {
+  pinMode(PIN_CAN_CS, OUTPUT);
+  digitalWrite(PIN_CAN_CS, HIGH);
   SPI.begin();
-  if(_can.begin(MCP_ANY, CAN_100KBPS, MCP_8MHZ) != CAN_OK) return false;
 
-  // Filters: CCID, KEY, DOORS, KL15, HANDBRAKE
-  _can.init_Mask(0, 0, 0x7FF);
+  if (_can.begin(MCP_ANY, CAN_100KBPS, MCP_8MHZ) != CAN_OK)
+    return false;
+
+  // Filters: CCID, KEY, DOORS, KL15, HANDBRAKE, AirBag
+  _can.init_Mask(0, 0, 0x7FF);           // full 11-bit mask
   _can.init_Filt(0, 0, ID_CCID);
   _can.init_Filt(1, 0, ID_KEYBTN);
 
@@ -19,12 +22,14 @@ bool CanBus::begin(){
   _can.init_Filt(2, 0, ID_DOORS2);
   _can.init_Filt(3, 0, ID_KL15);
   _can.init_Filt(4, 0, ID_HANDBRAKE);
-  _can.init_Filt(5, 0, ID_KEYBTN);
+  _can.init_Filt(5, 0, ID_AirBag);       // <-- added AirBag filter (0x2FA)
 
   _can.setMode(MCP_NORMAL);
   pinMode(PIN_CAN_INT, INPUT);
+
   return true;
 }
+
 
 // ================= raw + de-dup =================
 bool CanBus::readRaw(uint32_t &id, uint8_t &len, uint8_t *buf){

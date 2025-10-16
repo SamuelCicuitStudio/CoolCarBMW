@@ -49,6 +49,7 @@
 #define BMW_E60_Brake                      0x19E
 
 #define BMW_E60_handbrake                     0x1B4
+#define BMW_E60_AirBag                     0x2FA
 
 // ---- capture KOMBI time ----
 struct Snap { bool seen; uint8_t len; uint8_t data[8]; };
