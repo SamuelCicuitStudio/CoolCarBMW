@@ -48,6 +48,19 @@ bool     kl15Prev = false;
 bool     lowFuelSeenWhileIgnOn = false; // set if low fuel CCID fired with KL15 ON
 bool     lowFuelRemindArmed    = false; // armed at KL15->OFF; play track 45 once on driver-door open
 
+// --- NEW: KL15 raw tracking & engine-stop Goodbye arming ---
+uint8_t  kl15Raw = 0x00;                 // last seen raw KL15 byte (e.g., 0x00, 0x40, 0x41, 0x45, 0x55)
+uint8_t  kl15Hist[4] = {0,0,0,0};        // circular history (newest write index is kl15HistIdx-1)
+uint8_t  kl15HistIdx = 0;                // increments on each new sample
+bool     engineStopGoodbyeArmed = false; // set on RUN/CRANK -> {0x40,0x00} transition
+
+static inline bool kl15IsRunVal(uint8_t v){ return (v==0x45) || (v==0x55); }
+static inline void kl15Push(uint8_t v){
+  kl15Raw = v;
+  kl15Hist[kl15HistIdx & 3] = v;
+  kl15HistIdx++;
+}
+
 // Radio (GPIO9) + low-battery inhibit
 bool radioUnlockedWaitingDoor = false; // after UNLOCK, set HIGH on first door open (unless low-batt CCID active)
 bool lowBatteryActive = false;         // active low-batt CCID inhibits radio HIGH on unlock
@@ -227,9 +240,27 @@ void loop(){
 
     // KL15 observe (same byte your CanBus uses)
     if(id == ID_KL15 && len>=1){
+      const uint8_t v = buf[0];
+
+      // --- NEW: detect RUN/CRANK -> {0x40,0x00} to arm Goodbye ---
+      const bool wasRunLike = kl15IsRunVal(kl15Raw);
+      const bool nowRunLike = kl15IsRunVal(v);
+      kl15Push(v);
+
+      // Existing boolean for other subsystems (sweep/etc)
       kl15Prev = kl15On;
       // RUN or START means ON (ACC not used here for sweep)
-      kl15On = ((buf[0] & 0x04)!=0) || ((buf[0] & 0x08)!=0);
+      kl15On = ((v & 0x04)!=0) || ((v & 0x08)!=0);
+
+      // Arm goodbye only when engine was running and now is stopped (v==0x40 or 0x00)
+      if (wasRunLike && !nowRunLike && (v==0x40 || v==0x00)){
+        engineStopGoodbyeArmed = true;
+        DBG(F("[KL15] Engine STOP (45/55 -> 40/00) => Goodbye ARMED"));
+      }
+      if (nowRunLike){
+        engineStopGoodbyeArmed = false; // cancel if running again
+      }
+
       if(kl15Prev && !kl15On){
         // Ignition just turned OFF
         if(lowFuelSeenWhileIgnOn){
@@ -331,7 +362,8 @@ void loop(){
     if(passengerOpen) passengerSeenSinceUnlock = true;
 
     // WELCOME (priority 3): only on driver door, within window or held by non-driver opens
-    if(driverOpen && welcomeArmed && (welcomeHold || timeBefore(welcomeDeadline))){
+    // SUPPRESS welcome if a Goodbye is armed (engine just stopped)
+    if(driverOpen && welcomeArmed && !engineStopGoodbyeArmed && (welcomeHold || timeBefore(welcomeDeadline))){
       playWelcome();
       welcomeArmed = false; welcomeHold = false;
     } else if(anyOpen && welcomeArmed && !driverOpen){
@@ -366,8 +398,8 @@ void loop(){
       }
     }
 
-    // GOODBYE variants when key out and no CCID active
-    if(anyOpen && !kl15On){
+    // GOODBYE variants when engine just stopped (RUN->40/00) and no CCID active
+    if(anyOpen && !kl15On && engineStopGoodbyeArmed){
       const bool anyCcidActive = (lastStatus==0x02);
       if(!anyCcidActive && !lowFuelRemindArmed){
         uint16_t tr = 0;
@@ -387,8 +419,10 @@ void loop(){
             nowPlaying = NowPlaying::Ccid;
             Serial.print(F("[PLAY] Goodbye T")); Serial.println(tr);
           }
+          engineStopGoodbyeArmed = false; // consume the armed Goodbye
         }
       }
+      // If CCID/lowFuel blocked it, keep it armed until a clean door-open opportunity.
     }
   }
 
