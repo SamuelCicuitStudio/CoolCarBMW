@@ -14,6 +14,12 @@
 #include "Player.h"
 #include "CCIDMap.h"
 
+// ========= Radio Power Control =========
+// The radio is NOT the DFPlayer. We hold its power via GPIO 9.
+#ifndef PIN_RADIO_HOLD
+#define PIN_RADIO_HOLD 9   // Keeps radio powered (HIGH = radio ON, LOW = radio OFF)
+#endif
+
 // =================== CONFIG ===================
 static const bool DEBUG_PRINTS = true;
 static inline void DBG(const __FlashStringHelper* s){ if(DEBUG_PRINTS) Serial.println(s); }
@@ -70,9 +76,14 @@ static inline void kl15Push(uint8_t v){
   kl15HistIdx++;
 }
 
-// Radio (GPIO9) + low-battery inhibit
-bool radioUnlockedWaitingDoor = false; // after UNLOCK, set HIGH on first door open (unless low-batt CCID active)
-bool lowBatteryActive = false;         // active low-batt CCID inhibits radio HIGH on unlock
+// ===== Radio state (GPIO9) =====
+static inline void radioSet(bool on){
+  digitalWrite(PIN_RADIO_HOLD, on ? HIGH : LOW);
+  if(DEBUG_PRINTS){ Serial.print(F("[RADIO] ")); Serial.println(on?F("HIGH"):F("LOW")); }
+}
+bool radioHeldAfterIgnOff = false;      // true: we are keeping radio on after KL15 went OFF
+bool radioUnlockedWaitingDoor = false;  // legacy latch (neutralized by new policy)
+bool lowBatteryActive = false;          // kept for compatibility with CCID tracking
 
 // =================== CLI (optional) ===================
 void parseCLI(){
@@ -137,12 +148,6 @@ void ensureSeatbeltLoop(){
 }
 void stopIfTrack(uint16_t tr){
   if(player.isPlaying() && player.currentTrack()==tr) player.stop();
-}
-
-// =================== RADIO CONTROL ===================
-static inline void radioSet(bool on){
-  digitalWrite(PIN_RADIO_HOLD, on?HIGH:LOW);
-  if(DEBUG_PRINTS){ Serial.print(F("[RADIO] ")); Serial.println(on?F("HIGH"):F("LOW")); }
 }
 
 // ===== Pending audio queue (priority-based) =====
@@ -215,7 +220,7 @@ void setup(){
   DBG(F("Starting main: Welcome/CCID/Seatbelt/Fuel/Goodbye/Radio + KOMBI + Queue"));
 
   // Pins
-  pinMode(PIN_RADIO_HOLD, OUTPUT);   radioSet(false);
+  pinMode(PIN_RADIO_HOLD, OUTPUT);   radioSet(false);         // radio initially OFF
   pinMode(PIN_SPK_RELAY, OUTPUT);    digitalWrite(PIN_SPK_RELAY, LOW); // anti-pop
 
   // CAN
@@ -325,18 +330,23 @@ void loop(){
         engineStopGoodbyeArmed = false; // cancel if running again
       }
 
+      // ===== Radio policy hooks =====
       if(kl15Prev && !kl15On){
-        // Ignition just turned OFF
+        // Ignition just turned OFF → KEEP RADIO ON until Lock
+        radioSet(true);
+        radioHeldAfterIgnOff = true;
+        DBG(F("[RADIO] Hold ON after KL15 OFF"));
         if(lowFuelSeenWhileIgnOn){
           lowFuelRemindArmed = true; // play 45 once on next driver-door open
         }
         DBG(F("[KL15] OFF; fuel remind armed?"));
       } else if(!kl15Prev && kl15On){
-        // Ignition just turned ON -> reset goodbye + remind arming
+        // Ignition just turned ON → clear goodbye/remind arming, radio policy unchanged
         lowFuelRemindArmed = false;
         passengerSeenSinceUnlock = false;
         passengerEnterConfirmed = false;      // reset per trip
         passengerSeatArmedByDoorOpen = false; // reset the arm
+        radioHeldAfterIgnOff = false;         // not in a post-off hold anymore
         DBG(F("[KL15] ON"));
         canbus.enableSweep(true);
       }
@@ -360,14 +370,14 @@ void loop(){
           if(nowPlaying == NowPlaying::Seatbelt) nowPlaying = NowPlaying::None;
         }
       } else {
-        // Track low-fuel + low-battery
+        // Track low-fuel + low-battery (keep for compatibility)
         if(isLowFuelCCID(ccid)){
           if(st==0x02 && kl15On)  lowFuelSeenWhileIgnOn = true;
           else if(st==0x01)       lowFuelSeenWhileIgnOn = false;
         }
         if(isLowBatteryCCID(ccid)){
           lowBatteryActive = (st==0x02);
-          // (radio inhibit handled on unlock first door)
+          // No longer inhibits radio-on; requirement says radio ON at unlock & held after OFF
         }
 
         // Play once per activation until cleared
@@ -392,7 +402,7 @@ void loop(){
     }
   }
 
-  // 2) Key events UNLOCK/LOCK
+  // 2) Key events UNLOCK/LOCK (radio policy integrated)
   CanBus::KeyEvent kev;
   while (canbus.nextKeyEvent(kev)){
     if(kev.type == CanBus::KeyEventType::Unlock){
@@ -402,15 +412,23 @@ void loop(){
       passengerSeenSinceUnlock = false;
       passengerEnterConfirmed = false;      // reset on unlock
       passengerSeatArmedByDoorOpen = false; // clear arm
-      radioUnlockedWaitingDoor = true;
-      DBG(F("[KEY] UNLOCK -> welcome armed; radio waits door"));
+
+      // New policy: ON at unlock immediately (no door wait)
+      radioUnlockedWaitingDoor = false;     // neutralize legacy path
+      radioHeldAfterIgnOff = false;         // now explicit unlock took control
+      radioSet(true);
+      DBG(F("[KEY] UNLOCK -> radio ON; welcome armed"));
+
     } else if(kev.type == CanBus::KeyEventType::Lock){
+      // New policy: OFF at lock, also cancels any post-off hold
+      radioSet(false);
       radioUnlockedWaitingDoor = false;
-      DBG(F("[KEY] LOCK"));
+      radioHeldAfterIgnOff = false;
+      DBG(F("[KEY] LOCK -> radio OFF"));
     }
   }
 
-  // 3) Door changes (welcome/goodbye/handbrake + radio on first door after unlock)
+  // 3) Door changes (welcome/goodbye/handbrake + legacy radio latch is disabled)
   CanBus::DoorEvent dev;
   while (canbus.nextDoorEvent(dev)){
     const bool driverOpen =
@@ -423,8 +441,11 @@ void loop(){
       dev.type==CanBus::DoorEventType::BootOpened ||
       dev.type==CanBus::DoorEventType::BonnetOpened;
 
+    // Legacy behavior (radio on first door after unlock) is now bypassed.
+    // We keep the variables for minimal perturbation; condition is never true.
     if(anyOpen && radioUnlockedWaitingDoor){
-      if(!lowBatteryActive){ radioSet(true); } // turn on radio unless battery low CCID active
+      // Previously: if(!lowBatteryActive){ radioSet(true); }
+      // Now unreachable because radioUnlockedWaitingDoor is cleared at unlock.
       radioUnlockedWaitingDoor = false;
     }
 
