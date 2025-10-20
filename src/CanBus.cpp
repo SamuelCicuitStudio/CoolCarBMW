@@ -10,19 +10,20 @@ bool CanBus::begin() {
   digitalWrite(PIN_CAN_CS, HIGH);
   SPI.begin();
 
-  if (_can.begin(MCP_ANY, CAN_100KBPS, MCP_8MHZ) != CAN_OK)
-    return false;
+if (_can.begin(MCP_ANY, CAN_100KBPS, MCP_8MHZ) != CAN_OK)
+  return false;
 
-  // Filters: CCID, KEY, DOORS, KL15, HANDBRAKE, AirBag
-  _can.init_Mask(0, 0, 0x7FF);           // full 11-bit mask
-  _can.init_Filt(0, 0, ID_CCID);
-  _can.init_Filt(1, 0, ID_KEYBTN);
+// Filters: CCID, KEYBTN, DOORS2, KL15, HANDBRAKE, AIRBAG, BUTTON
+_can.init_Mask(0, 0, 0x7FF);           // Full 11-bit mask (standard frames)
+_can.init_Filt(0, 0, ID_CCID);
+_can.init_Filt(1, 0, ID_KEYBTN);
 
-  _can.init_Mask(1, 0, 0x7FF);
-  _can.init_Filt(2, 0, ID_DOORS2);
-  _can.init_Filt(3, 0, ID_KL15);
-  _can.init_Filt(4, 0, ID_HANDBRAKE);
-  _can.init_Filt(5, 0, ID_AirBag);       // <-- added AirBag filter (0x2FA)
+_can.init_Mask(1, 0, 0x7FF);
+_can.init_Filt(2, 0, ID_DOORS2);
+_can.init_Filt(3, 0, ID_KL15);
+_can.init_Filt(4, 0, ID_HANDBRAKE);
+_can.init_Filt(5, 0, ID_BUTTON);      
+  
 
   _can.setMode(MCP_NORMAL);
   pinMode(PIN_CAN_INT, INPUT);

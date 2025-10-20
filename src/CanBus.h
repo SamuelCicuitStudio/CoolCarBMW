@@ -4,22 +4,6 @@
 #include "mcp_can.h"
 #include "Pins.h"
 
-// ---- CAN IDs (fallbacks if not already defined) ----
-#ifndef ID_CCID
-#define ID_CCID      0x338
-#endif
-#ifndef ID_KEYBTN
-#define ID_KEYBTN    0x23A   // BMW E60 Key Fob
-#endif
-#ifndef ID_DOORS2
-#define ID_DOORS2    0x2FC   // BMW E60 Door Status
-#endif
-#ifndef ID_KL15
-#define ID_KL15      0x130   // BMW E60 KL15
-#endif
-#ifndef ID_HANDBRAKE
-#define ID_HANDBRAKE 0x1B4   // BMW E60 Handbrake
-#endif
 
 class CanBus {
 public:

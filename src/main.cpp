@@ -27,6 +27,9 @@ static inline bool timeBefore(uint32_t deadline){ return (int32_t)(millis() - (i
 CanBus canbus;
 Player  player;
 
+// Sport mode state (global)
+bool sportMode = false;
+
 // Welcome state
 bool     welcomeArmed = false;
 bool     welcomeHold  = false; // true if any non-driver door opened after unlock
@@ -245,13 +248,12 @@ void loop(){
     canbus.onFrame(id,len,buf);
 
     // --- AirBag / Passenger detection (print only on change) ---
-    if (id == ID_AirBag && len >= 2) {
+    if (id == ID_AIRBAG && len >= 2) {
       const bool newPassengerSeated = bitRead(buf[1], 3);  // bit 3 of second byte
       if (newPassengerSeated != passengerSeated) {
         passengerSeated = newPassengerSeated;
         if (passengerSeated) {
           DBG(F("[AirBag] Passenger seated"));
-          // Confirm passenger presence only if seat became occupied AFTER passenger door previously opened
           if (passengerSeatArmedByDoorOpen) {
             passengerEnterConfirmed = true;
             passengerSeatArmedByDoorOpen = false; // consume the arm
@@ -259,10 +261,45 @@ void loop(){
           }
         } else {
           DBG(F("[AirBag] Passenger not seated"));
-          // If seat became empty, allow a new confirmation on a future passenger-door open
-          // (no change to passengerEnterConfirmed; that stays true for this trip once confirmed)
         }
       }
+    }
+
+    // --- Sport Mode Toggle (CAN 0x315): buf[0]=0x82 (ignored), buf[1]=F1/F2 ---
+    if (id == ID_BUTTON && len >= 2) {
+      const uint8_t modeByte = buf[1];  // second byte defines sport state
+      bool newSportMode = false;
+
+      if (modeByte == 0xF2) newSportMode = true;    // Sport ON
+      else if (modeByte == 0xF1) newSportMode = false; // Sport OFF
+
+      if (newSportMode != sportMode) {
+        sportMode = newSportMode;
+        if (sportMode) {
+          DBG(F("[BUTTON] Sport Mode ON"));
+          // Play T52 only if ignition is ON and Welcome isn't playing. Preempts seatbelt only.
+          if (kl15On && nowPlaying != NowPlaying::Welcome) {
+            if (player.isPlaying() && player.currentTrack()==2) player.stop();
+            if (!player.isPlaying()) {
+              player.playTrack(52);
+              nowPlaying = NowPlaying::Ccid;
+              DBG(F("[PLAY] Sport ON T52"));
+            }
+          }
+        } else {
+          DBG(F("[BUTTON] Sport Mode OFF"));
+          // Play T53 only if ignition is ON and Welcome isn't playing. Preempts seatbelt only.
+          if (kl15On && nowPlaying != NowPlaying::Welcome) {
+            if (player.isPlaying() && player.currentTrack()==2) player.stop();
+            if (!player.isPlaying()) {
+              player.playTrack(53);
+              nowPlaying = NowPlaying::Ccid;
+              DBG(F("[PLAY] Sport OFF T53"));
+            }
+          }
+        }
+      }
+      // Repeated F1/F2 frames every ~5s are ignored because sportMode state didn't change.
     }
 
     // KL15 observe (same byte your CanBus uses)
@@ -394,7 +431,6 @@ void loop(){
     if(passengerOpen){
       passengerSeenSinceUnlock = true;
       // Arm a passenger confirmation only if the seat is currently empty;
-      // we will confirm when AirBag later flips to seated.
       passengerSeatArmedByDoorOpen = !passengerSeated;
     }
 
@@ -442,10 +478,8 @@ void loop(){
         uint16_t tr = 0;
 
         if (passengerEnterConfirmed){
-          // Driver + passenger
           tr = (random(0,2)==0) ? 48 : 49;   // goodbye driver & passenger / 2
         } else {
-          // Driver only
           tr = (random(0,2)==0) ? 46 : 47;   // goodbye driver / 2
         }
 
@@ -461,7 +495,6 @@ void loop(){
           engineStopGoodbyeArmed = false; // consume the armed Goodbye
         }
       }
-      // If CCID/lowFuel blocked it, keep it armed until a clean driver-door open opportunity.
     }
   }
 
