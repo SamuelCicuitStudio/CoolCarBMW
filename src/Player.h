@@ -7,7 +7,7 @@
 
 class Player {
 public:
-  // ---- Tunables (conservative for reliable wake) ----
+  // ---- Tunables (kept conservative for reliable wake) ----
   static const uint8_t  DF_VOLUME_DEFAULT = 12;    // 0..30
   static const uint8_t  DF_VOLUME_MAX     = 30;
 
@@ -34,10 +34,10 @@ public:
   void setBenchMode(bool bench) { _bench = bench; }
 
   // playback
-  bool playTrack(uint16_t track);      // 1..DF_MAX_MP3
+  bool playTrack(uint16_t track);                 // 1..DF_MAX_MP3
   bool playCCID(uint16_t ccid) { return playTrack(trackForCcid(ccid)); }
   void stop(bool forcePowerOff = false);
-  void pause();                        // optional convenience
+  void pause();
 
   // loop
   void loop();
@@ -53,7 +53,7 @@ public:
 
 private:
   // readiness & power
-  bool ensureReady();                               // fully (re)connect & wait for DF to be ready
+  bool ensureReady();                               // fully (re)connect & wait for DF to be ready (and set volume)
   void powerOnDF();
   void powerOffDF();
 

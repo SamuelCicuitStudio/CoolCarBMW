@@ -20,7 +20,7 @@ void Player::begin() {
   _currentTrack = 0;
   _lastActiveMs = millis();
 
-  // We (re)start serial in ensureReady()
+  // Serial will be (re)started in ensureReady()
   _ss.end();
 }
 
@@ -78,13 +78,12 @@ bool Player::ensureReady() {
     _df.reset(false);
     pumpDF(DF_POST_RESET_MS);
 
-    // Optional: ensure source is TF (most boards default to TF anyway)
+    // Ensure source is TF
     _df.setSource(DFPMini::SRC_TF, false);
     pumpDF(50);
 
     // Wait until DF reports "idle/ready": BUSY must be HIGH (not playing)
     if (!waitForDFReady(DF_READY_TIMEOUT_MS)) {
-      // If the module isn't ready, there's no point in continuing
       return false;
     }
   } else {
@@ -92,7 +91,7 @@ bool Player::ensureReady() {
     (void)waitBusyLevel(HIGH, 500);
   }
 
-  // Apply volume (again) after any reset or reattach
+  // IMPORTANT: Apply volume after any reset or reattach (before any playback)
   _df.setVolume(_volume);
   pumpDF(50);
 
@@ -109,13 +108,13 @@ bool Player::waitBusyLevel(int level, uint16_t timeout_ms) {
   return (digitalRead(PIN_DF_BUSY) == level);
 }
 
-// Wait for the DF mini to be "ready": BUSY HIGH and/or init/device-in events observed
+// Wait for DF mini to be "ready": BUSY HIGH and/or init/device-in events observed
 bool Player::waitForDFReady(uint16_t timeout_ms) {
   const uint32_t t0 = millis();
   bool sawInitOrDevice = false;
 
   while (!elapsedSince(t0, timeout_ms)) {
-    // BUSY HIGH means idle/ready (per wiring comment)
+    // BUSY HIGH means idle/ready
     if (digitalRead(PIN_DF_BUSY) == HIGH) return true;
 
     // Parse inbound frames and look for EV_INIT/EV_DEVICE_IN
@@ -156,7 +155,10 @@ bool Player::playTrack(uint16_t track) {
 
   // Double-check idle right before PLAY (protect against lingering activity)
   (void)waitBusyLevel(HIGH, 500);
-  
+
+  // Re-apply volume immediately before starting playback, in case DF reset or changed
+  _df.setVolume(_volume);
+  pumpDF(20);
 
   // PLAY by index (0x12) – we rely on simple 1..N mapping
   _df.send(0x12, track, false);
