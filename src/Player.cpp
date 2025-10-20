@@ -156,7 +156,8 @@ bool Player::playTrack(uint16_t track) {
 
   // Double-check idle right before PLAY (protect against lingering activity)
   (void)waitBusyLevel(HIGH, 500);
-
+  
+  relayOn();
   // PLAY by index (0x12) – we rely on simple 1..N mapping
   _df.send(0x12, track, false);
   pumpDF(8);
@@ -179,7 +180,7 @@ bool Player::playTrack(uint16_t track) {
 
   // Now actually playing → engage relay slightly after BUSY transitions
   delay(AMP_ON_AFTER_BUSY_MS);
-  relayOn();
+
 
   _playing = true;
   _currentTrack = track;
