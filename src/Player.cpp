@@ -91,10 +91,12 @@ bool Player::ensureReady() {
     (void)waitBusyLevel(HIGH, 500);
   }
 
-  // IMPORTANT: Apply volume after any reset or reattach (before any playback)
+  // IMPORTANT: Apply volume after any reset or reattach (before any playback).
+  // Some DF clones drop the first state command after reset; send twice with spacing.
   _df.setVolume(_volume);
-  pumpDF(50);
-
+  pumpDF(80);
+  _df.setVolume(_volume);
+  pumpDF(80);
   return true;
 }
 
@@ -158,7 +160,9 @@ bool Player::playTrack(uint16_t track) {
 
   // Re-apply volume immediately before starting playback, in case DF reset or changed
   _df.setVolume(_volume);
-  pumpDF(20);
+  pumpDF(40);
+  _df.setVolume(_volume);
+  pumpDF(40);
 
   // PLAY by index (0x12) – we rely on simple 1..N mapping
   _df.send(0x12, track, false);

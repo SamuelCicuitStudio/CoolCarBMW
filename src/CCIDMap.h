@@ -4,7 +4,7 @@
 // NOTE: keep as-is unless you explicitly raise it elsewhere.
 // Tracks 51–53 exist in your list; ensure DF_MAX_MP3 is large enough
 // in your build if you want to play them via Player::playTrack().
-#define  DF_MAX_MP3  50 // max sounds
+#define  DF_MAX_MP3  60 // max sounds
 
 /*
   TRACK MAP (requested list)

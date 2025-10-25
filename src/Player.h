@@ -35,7 +35,13 @@ public:
 
   // playback
   bool playTrack(uint16_t track);                 // 1..DF_MAX_MP3
-  bool playCCID(uint16_t ccid) { return playTrack(trackForCcid(ccid)); }
+  // Player.h
+  bool playCCID(uint16_t ccid) {
+    uint16_t tr = trackForCcid(ccid);   // e.g. CC-ID 0 -> 23
+    if (tr < 1) tr = 1;                 // guard for old maps / bad data
+    return playTrack(tr);               // playTrack() will clamp to DF_MAX_MP3
+  }
+
   void stop(bool forcePowerOff = false);
   void pause();
 

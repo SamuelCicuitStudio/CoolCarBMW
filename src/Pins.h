@@ -24,3 +24,4 @@
 #define ID_BUTTON      0x315  // Button command frame
 #define ID_HANDBRAKE   0x1B4  // Handbrake state
 #define ID_AIRBAG      0x2FA  // Airbag frame
+#define ID_BATT_CHECK  0x3B4  // battery check

@@ -226,12 +226,45 @@ bool CanBus::nextKeyEvent(KeyEvent &ev){
   return true;
 }
 
-// ---- dispatcher
+// --- Voltage decode helper (0x3B4) ---
+void CanBus::handleVoltage_3B4(const uint8_t* buf, uint8_t len){
+  if(len < 3) return;
+  uint16_t raw = (uint16_t)(((buf[1] & 0x0F) << 8) | buf[0]);
+  float v = 0.0147059f * raw;      // same scale you’re using
+  _lastVoltage = v;
+  _voltageSeen = true;
+}
+
+// --- dispatcher (single, merged) ---
 void CanBus::onFrame(uint32_t id, uint8_t len, const uint8_t *buf){
   const uint32_t now = millis();
 
-  if(id == ID_KL15 && len>=1)           updateKL15_fromB0(buf[0]);
-  else if(id == ID_DOORS2 && len>=3)    handleDoors_2FC(buf, len, now);
-  else if(id == ID_HANDBRAKE && len>=6) handleHandbrake_1B4(buf, len, now);
-  else if(id == ID_KEYBTN && len>=3)    handleKey_23A(buf, len, now);
+  if      (id == ID_KL15     && len>=1) updateKL15_fromB0(buf[0]);
+  else if (id == ID_DOORS2   && len>=3) handleDoors_2FC(buf, len, now);
+  else if (id == ID_HANDBRAKE&& len>=6) handleHandbrake_1B4(buf, len, now);
+  else if (id == ID_KEYBTN   && len>=3) handleKey_23A(buf, len, now);
+  else if (id == 0x3B4       && len>=3) handleVoltage_3B4(buf, len);  // battery voltage
+}
+
+
+// --- Blocking convenience: wait for a 0x3B4 up to timeoutMs ---
+bool CanBus::readVoltage(float& outV, uint16_t timeoutMs){
+  uint32_t start = millis();
+  do {
+    uint32_t id; uint8_t len; uint8_t buf[8];
+    if(readOnceDistinct(id, len, buf)){
+      // keep other subsystems in sync
+      onFrame(id, len, buf);
+
+      if(id == 0x3B4 && len >= 3){
+        uint16_t raw = (uint16_t)(((buf[1] & 0x0F) << 8) | buf[0]);
+        outV = 0.0147059f * raw;
+        _lastVoltage = outV;
+        _voltageSeen = true;
+        return true;
+      }
+    }
+  } while((uint32_t)(millis()-start) < timeoutMs);
+
+  return false;
 }

@@ -75,6 +75,11 @@ public:
   enum class KeyEventType : uint8_t { Unlock, Lock, Trunk, Other };
   struct KeyEvent { KeyEventType type; uint32_t t_ms; };
   bool nextKeyEvent(KeyEvent &ev);
+  // ---- Voltage (0x3B4) ----
+  bool  readVoltage(float& outV, uint16_t timeoutMs = 100); // blocking helper (wait up to timeout)
+  bool  voltageValid() const { return _voltageSeen; }        // have we seen a 0x3B4 yet?
+  float lastVoltage() const { return _lastVoltage; }         // latest decoded voltage
+  bool kl15On() const { return _kl15On; };
 
 private:
   // ===== raw + de-dup =====
@@ -133,4 +138,7 @@ private:
 
   void pushKeyEvent(KeyEventType t, uint32_t now);
   void handleKey_23A(const uint8_t *buf, uint8_t len, uint32_t now);
+  void  handleVoltage_3B4(const uint8_t* buf, uint8_t len);
+  float _lastVoltage = NAN;
+  bool  _voltageSeen = false;
 };
